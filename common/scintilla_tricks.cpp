@@ -25,6 +25,7 @@
 #include <widgets/wx_grid.h>
 #include <widgets/ui_common.h>
 #include <wx/stc/stc.h>
+#include <wx/weakref.h>
 #include <gal/color4d.h>
 #include <dialog_shim.h>
 #include <wx/clipbrd.h>
@@ -209,16 +210,23 @@ void SCINTILLA_TRICKS::onModified( wxStyledTextEvent& aEvent )
         {
             // Scintilla won't allow us to call SetText() from within this event processor,
             // so we have to delay the processing.
-            CallAfter( [this]()
-                       {
-                           wxString text = m_te->GetText();
-                           int currpos = m_te->GetCurrentPos();
+            // Dispatch on the control, not on SCINTILLA_TRICKS: a dialog may
+            // be destroyed before this deferred modification is processed.
+            wxWeakRef<wxStyledTextCtrl> editor( m_te );
 
-                           text.Replace( wxS( "\n" ), wxS( "" ) );
-                           text.Replace( wxS( "\r" ), wxS( "" ) );
-                           m_te->SetText( text );
-                           m_te->GotoPos( currpos-1 );
-                       } );
+            m_te->CallAfter( [editor]()
+                             {
+                                 if( !editor || editor->IsBeingDeleted() )
+                                     return;
+
+                                 wxString text = editor->GetText();
+                                 int currpos = editor->GetCurrentPos();
+
+                                 text.Replace( wxS( "\n" ), wxS( "" ) );
+                                 text.Replace( wxS( "\r" ), wxS( "" ) );
+                                 editor->SetText( text );
+                                 editor->GotoPos( currpos-1 );
+                             } );
         }
     }
 
@@ -226,12 +234,16 @@ void SCINTILLA_TRICKS::onModified( wxStyledTextEvent& aEvent )
     {
         // If the font is larger than the height of a single-line text box we can get issues
         // with the text disappearing every other character due to dodgy scrolling behaviour.
-        CallAfter(
-                [this]()
-                {
-                    if( !m_te->AutoCompActive() )
-                        m_te->ScrollToStart();
-                } );
+        // Don't leave a queued callback holding a raw SCINTILLA_TRICKS
+        // pointer after closing the parent dialog. The weak control ref is
+        // invalidated by wxWidgets when its window is destroyed.
+        wxWeakRef<wxStyledTextCtrl> editor( m_te );
+
+        m_te->CallAfter( [editor]()
+                         {
+                             if( editor && !editor->IsBeingDeleted() && !editor->AutoCompActive() )
+                                 editor->ScrollToStart();
+                         } );
     }
 }
 
